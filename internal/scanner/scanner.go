@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/morkin1792/flatsqli/internal/parser"
@@ -188,49 +189,71 @@ func (s *Scanner) ScanParameter(param Parameter) *ScanResult {
 	if singleQuote != nil && doubleQuote != nil {
 		if !singleQuote.Fingerprint.Equals(doubleQuote.Fingerprint) {
 			result.IsVulnerable = true
-			result.VulnType = "error-based"
+			result.VulnType = "quote-based"
 			result.Details = "Different responses for ' vs ''"
 			result.WorkingPayload = param.Value + "'"
-			ui.Verbose(s.verbose, "Found error-based SQLi in %s", param.Name)
+			ui.Verbose(s.verbose, "Found quote-based SQLi in %s", param.Name)
 			return result
 		}
 	}
 
-	// Step 2: Test if parameter affects response at all
-	original := s.sendWithValue(param, "info")
-	random := s.sendWithValue(param, "xxxx")
-
-	if original == nil || random == nil {
+	// Step 2: Test concat/math payloads dynamically
+	// First, get a garbage baseline to avoid false positives (e.g., error pages)
+	garbageValue := "asdfweqoweriu"
+	garbageResp := s.sendWithValue(param, garbageValue)
+	if garbageResp == nil {
 		return result
 	}
 
-	if original.Fingerprint.Equals(random.Fingerprint) {
-		// Parameter doesn't affect response - no SQLi
-		ui.Verbose(s.verbose, "Parameter %s doesn't affect response", param.Name)
-		return result
-	}
+	// Build array with original value + common testing values
+	commonTestingValues := []string{"admin", "1", "0"}
+	testValues := append([]string{param.Value}, commonTestingValues...)
+	concatOperators := []string{"||", "+", "", " "}
 
-	// Step 3: Test concat payloads
-	concatPayloads := []struct {
-		payload string
-		dbType  string
-	}{
-		{"in'||'fo", "Oracle/PostgreSQL"},
-		{"in'+'fo", "MSSQL"},
-		{"CONCAT('in','fo')", "MySQL"},
-		{"'in'||'fo'", "Oracle/PostgreSQL (full)"},
-		{"'in'+'fo'", "MSSQL (full)"},
-	}
+	for _, val := range testValues {
+		if len(val) < 1 {
+			continue
+		}
+		valResp := s.sendWithValue(param, val)
+		if valResp == nil {
+			continue
+		}
 
-	for _, cp := range concatPayloads {
-		resp := s.sendWithValue(param, cp.payload)
-		if resp != nil && original.Fingerprint.Equals(resp.Fingerprint) {
-			result.IsVulnerable = true
-			result.VulnType = "concat-based"
-			result.Details = "Concat payload matches original - " + cp.dbType
-			result.WorkingPayload = cp.payload
-			ui.Verbose(s.verbose, "Found concat-based SQLi in %s using %s", param.Name, cp.dbType)
-			return result
+		// Skip if this value produces same response as garbage (likely error page)
+		if valResp.Fingerprint.Equals(garbageResp.Fingerprint) {
+			continue
+		}
+
+		// Generate concat payloads: insert operator after first character
+		// e.g., for "apple" with "||": "a'||'pple"
+		for _, op := range concatOperators {
+			payload := fmt.Sprintf("%s'%s'%s", val[:1], op, val[1:])
+			resp := s.sendWithValue(param, payload)
+			// SQLi detected if: concat response matches original value AND differs from garbage
+			if resp != nil && valResp.Fingerprint.Equals(resp.Fingerprint) && !garbageResp.Fingerprint.Equals(resp.Fingerprint) {
+				result.IsVulnerable = true
+				result.VulnType = "concat-based"
+				result.Details = fmt.Sprintf("Concat payload '%s' produced same response as '%s'", payload, val)
+				result.WorkingPayload = payload
+				ui.Verbose(s.verbose, "Found concat-based SQLi in %s using payload: %s", param.Name, payload)
+				return result
+			}
+		}
+
+		// If value is numeric, test math payload
+		if isNumeric(val) {
+			numVal, _ := strconv.Atoi(val)
+			mathPayload := fmt.Sprintf("%d-2", numVal+2)
+			resp := s.sendWithValue(param, mathPayload)
+			// SQLi detected if: math result matches original value AND differs from garbage
+			if resp != nil && valResp.Fingerprint.Equals(resp.Fingerprint) && !garbageResp.Fingerprint.Equals(resp.Fingerprint) {
+				result.IsVulnerable = true
+				result.VulnType = "math-based"
+				result.Details = fmt.Sprintf("Math payload '%s' produced same response as '%s'", mathPayload, val)
+				result.WorkingPayload = mathPayload
+				ui.Verbose(s.verbose, "Found math-based SQLi in %s using payload: %s", param.Name, mathPayload)
+				return result
+			}
 		}
 	}
 
@@ -268,8 +291,8 @@ func (s *Scanner) sendWithValue(param Parameter, newValue string) *requester.Res
 		return nil
 	}
 
-	// Use SendRaw which preserves proxy/timeout settings from the existing requester
-	resp, err := s.requester.SendRaw(modifiedRaw)
+	// Use SendRawWithContext which preserves proxy/timeout settings and logs the test value
+	resp, err := s.requester.SendRawWithContext(modifiedRaw, newValue)
 	if err != nil {
 		return nil
 	}
@@ -372,4 +395,14 @@ func PrintResults(results []*ScanResult) {
 			fmt.Println()
 		}
 	}
+}
+
+// isNumeric checks if a string is composed only of digits
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }

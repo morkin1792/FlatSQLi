@@ -9,6 +9,7 @@ import (
 // Writer handles output to file with immediate flush for crash resilience
 type Writer struct {
 	file           *os.File
+	filePath       string
 	mu             sync.Mutex
 	isURLs         bool // true for URL list input, false for request directory
 	hasItems       bool
@@ -28,8 +29,9 @@ func New(path string, isURLInput bool) (*Writer, error) {
 	}
 
 	w := &Writer{
-		file:   file,
-		isURLs: isURLInput,
+		file:     file,
+		filePath: path,
+		isURLs:   isURLInput,
 	}
 
 	// Write header title only (code block will be opened when first item is written or after headers)
@@ -120,6 +122,27 @@ func (w *Writer) Close() error {
 	}
 
 	return w.file.Close()
+}
+
+// CloseAndCleanup closes the file and deletes it if no results were written
+func (w *Writer) CloseAndCleanup() error {
+	if w == nil {
+		return nil
+	}
+
+	w.mu.Lock()
+	hasItems := w.hasItems
+	filePath := w.filePath
+	w.mu.Unlock()
+
+	// Close the file first
+	w.Close()
+
+	// Delete the file if no results were written
+	if !hasItems && filePath != "" {
+		return os.Remove(filePath)
+	}
+	return nil
 }
 
 // writeString writes and immediately flushes

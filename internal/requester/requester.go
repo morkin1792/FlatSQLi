@@ -99,7 +99,7 @@ func (r *Requester) Send(payload string) (*Response, error) {
 	// Build the full URL
 	targetURL := modifiedReq.GetTargetURL()
 
-	ui.Verbose(r.verbose, "[Req #%d] %s %s (payload: %s)", r.requestNum, modifiedReq.Method, targetURL, truncatePayload(payload, 50))
+	ui.Verbose(r.verbose, "[Req #%d] %s %s", r.requestNum, modifiedReq.Method, targetURL)
 
 	// Create HTTP request logic encapsulated for retry
 	sendAttempt := func() (*Response, error) {
@@ -181,8 +181,14 @@ func (r *Requester) Send(payload string) (*Response, error) {
 	return nil, lastErr
 }
 
-// SendRaw sends a raw payload without modification
+// SendRaw sends a raw payload without modification (for detect mode)
+// testValue is the parameter value being tested, used for verbose logging
 func (r *Requester) SendRaw(rawRequest string) (*Response, error) {
+	return r.SendRawWithContext(rawRequest, "")
+}
+
+// SendRawWithContext sends a raw request with context for verbose logging
+func (r *Requester) SendRawWithContext(rawRequest string, testValue string) (*Response, error) {
 	tempReq, err := parser.ParseRequest(rawRequest)
 	if err != nil {
 		return nil, err
@@ -191,11 +197,98 @@ func (r *Requester) SendRaw(rawRequest string) (*Response, error) {
 	// Preserve scheme from original base request (for -ph flag)
 	tempReq.Scheme = r.baseRequest.Scheme
 
+	r.requestNum++
+
+	// Build the full URL
+	targetURL := tempReq.GetTargetURL()
+
+	if testValue != "" {
+		ui.Verbose(r.verbose, "[Req #%d] %s %s (testing: %s)", r.requestNum, tempReq.Method, targetURL, truncatePayload(testValue, 50))
+	} else {
+		ui.Verbose(r.verbose, "[Req #%d] %s %s", r.requestNum, tempReq.Method, targetURL)
+	}
+
 	oldBase := r.baseRequest
 	r.baseRequest = tempReq
 	defer func() { r.baseRequest = oldBase }()
 
-	return r.Send("")
+	// Create HTTP request logic encapsulated for retry
+	sendAttempt := func() (*Response, error) {
+		var bodyReader io.Reader
+		if tempReq.Body != "" {
+			bodyReader = strings.NewReader(tempReq.Body)
+		}
+
+		httpReq, err := http.NewRequest(tempReq.Method, targetURL, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Set headers from request
+		for key, value := range tempReq.Headers {
+			if strings.ToLower(key) == "host" {
+				continue
+			}
+			httpReq.Header.Set(key, value)
+		}
+
+		// Apply custom headers (override existing)
+		for key, value := range r.customHeaders {
+			httpReq.Header.Set(key, value)
+		}
+
+		// Add cache-busting headers to prevent proxy caching
+		httpReq.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		httpReq.Header.Set("Pragma", "no-cache")
+
+		// Send request
+		start := time.Now()
+		resp, err := r.client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+		defer resp.Body.Close()
+		duration := time.Since(start)
+
+		// Read body
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Create fingerprint
+		fp := fingerprint.NewWithMatchString(resp.StatusCode, body, r.matchString)
+
+		response := &Response{
+			StatusCode:  resp.StatusCode,
+			Body:        body,
+			Headers:     resp.Header,
+			Fingerprint: fp,
+			Duration:    duration,
+		}
+
+		ui.Verbose(r.verbose, "[Resp #%d] Status: %d, Words: %d, Length: %d, Time: %dms",
+			r.requestNum, fp.StatusCode, fp.WordCount, fp.ContentLength, duration.Milliseconds())
+
+		return response, nil
+	}
+
+	// Retry loop
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(500*(i)) * time.Millisecond)
+			ui.Verbose(r.verbose, "Retrying request... (%d/3)", i+1)
+		}
+
+		resp, err := sendAttempt()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+	}
+
+	return nil, lastErr
 }
 
 // GetRequestCount returns the number of requests made
