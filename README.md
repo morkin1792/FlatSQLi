@@ -2,7 +2,7 @@
 
 ![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8.svg?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
-![Release](https://img.shields.io/badge/release-v1.1.0-blue.svg?style=flat-square)
+![Release](https://img.shields.io/badge/release-v1.1.1-blue.svg?style=flat-square)
 
 A lightweight, boolean-based SQL injection exploitation tool designed for stealth and efficiency.
 
@@ -26,7 +26,7 @@ A lightweight, boolean-based SQL injection exploitation tool designed for stealt
 
 The detection engine uses a simple approach to identify SQLi with minimal false positives and avoiding WAF blocks:
 
-1. **Quote-Based Detection**: Tests `'` vs `''`, different responses indicate SQLi.
+1. **Quote-Based Detection**: Tests `'` vs `''` vs `'''`.
 
 2. **Concat/Math Payload Testing**: Generates payloads using common testing values like `admin`, `1`, `0`, together with SQL concat operators: `apple` → `a'||'pple`, `a'+'pple`, `a' 'pple`. For numeric values, also tests math: `2` → `4-2`. Then, a garbage baseline filters out error pages. SQLi is only flagged if the payload response matches the original value **and** differs from the garbage response.
 
@@ -38,7 +38,7 @@ go install github.com/morkin1792/flatsqli@latest
 
 ```bash
 # or
-# git clone https://github.com/morkin1792/flatsqli.git && cd flatsqli && go build -o flatsqli .
+# git clone https://github.com/morkin1792/flatsqli && cd flatsqli && go build -o flatsqli .
 ```
 
 ## 🚀 Quick Start
@@ -73,7 +73,7 @@ flatsqli exploit -rf req.txt -fid -o output.md
  |  _| | | (_| | |_ ___) | |_| | |___| |
  |_|   |_|\__,_|\__|____/ \__\_\_____|_|
                                          
-         SQLi Exploitation Tool v1.1.0
+         SQLi Exploitation Tool v1.1.1
                 Lightweight & WAF-Friendly
 
 Usage: flatsqli <command> [options]

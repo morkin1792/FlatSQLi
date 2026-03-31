@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	version = "1.1.0"
+	version = "1.1.1"
 
 	generalOptionsHelp = `General Options:
   -o, -output <file>       Output file path (markdown format)

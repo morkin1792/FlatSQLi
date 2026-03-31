@@ -182,28 +182,48 @@ func (s *Scanner) ScanParameter(param Parameter) *ScanResult {
 
 	ui.Verbose(s.verbose, "Testing parameter: %s (%s)", param.Name, param.Location)
 
-	// Step 1: Test ' vs '' for error-based detection
+	// Step 1: Test ' vs '' for quote-based detection with triple-quote confirmation
 	singleQuote := s.sendWithValue(param, param.Value+"'")
 	doubleQuote := s.sendWithValue(param, param.Value+"''")
 
 	if singleQuote != nil && doubleQuote != nil {
 		if !singleQuote.Fingerprint.Equals(doubleQuote.Fingerprint) {
-			result.IsVulnerable = true
-			result.VulnType = "quote-based"
-			result.Details = "Different responses for ' vs ''"
-			result.WorkingPayload = param.Value + "'"
-			ui.Verbose(s.verbose, "Found quote-based SQLi in %s", param.Name)
-			return result
+			// Candidate found — confirm with triple-quote.
+			// In real SQLi, odd-quote payloads (' and ''') both cause SQL syntax errors
+			// and produce the same response, while even-quote payloads ('') produce a
+			// different (valid) response. App-level validation typically treats 1 vs 3
+			// quotes differently, so this filters out those false positives.
+			tripleQuote := s.sendWithValue(param, param.Value+"'''")
+			if tripleQuote != nil && tripleQuote.Fingerprint.Equals(singleQuote.Fingerprint) {
+				result.IsVulnerable = true
+				result.VulnType = "quote-based"
+				result.Details = "Different responses for ' vs '' (confirmed with ''')"
+				result.WorkingPayload = param.Value + "'"
+				ui.Verbose(s.verbose, "Found quote-based SQLi in %s (triple-quote confirmed)", param.Name)
+				return result
+			}
+			ui.Verbose(s.verbose, "Quote diff detected in %s but triple-quote confirmation failed, continuing", param.Name)
 		}
 	}
 
 	// Step 2: Test concat/math payloads dynamically
-	// First, get a garbage baseline to avoid false positives (e.g., error pages)
-	garbageValue := "asdfweqoweriu"
-	garbageResp := s.sendWithValue(param, garbageValue)
-	if garbageResp == nil {
+	// First, get two garbage baselines to verify the app returns stable responses for unknown inputs
+	garbageValue1 := "asdfweqoweriu"
+	garbageValue2 := "zxcvbnmrtyuio"
+	garbageResp1 := s.sendWithValue(param, garbageValue1)
+	garbageResp2 := s.sendWithValue(param, garbageValue2)
+	if garbageResp1 == nil || garbageResp2 == nil {
 		return result
 	}
+
+	// If the two garbage responses differ, the app produces non-deterministic output
+	// for unknown values (e.g., search engines, recommendations) — concat/math
+	// comparisons would be unreliable, so skip this parameter.
+	if !garbageResp1.Fingerprint.Equals(garbageResp2.Fingerprint) {
+		ui.Verbose(s.verbose, "Skipping concat/math testing for %s: non-deterministic responses for unknown values", param.Name)
+		return result
+	}
+	garbageResp := garbageResp1
 
 	// Build array with original value + common testing values
 	commonTestingValues := []string{"admin", "1", "0"}
